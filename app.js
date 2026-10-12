@@ -1,4 +1,4 @@
-import { ReportError, createPointerReader, readJson, resolveDelivery, loadDelivery, saveCachedReport } from "./loader.js?v=5";
+import { ReportError, createPointerReader, readJson, resolveDelivery, loadDelivery, saveCachedReport } from "./loader.js?v=6";
 
 const status = document.querySelector("#status");
 let settings;
