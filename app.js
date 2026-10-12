@@ -1,4 +1,4 @@
-import { downloadReport, readCachedReport, saveCachedReport } from "./loader.js?v=2";
+import { createPointerReader, downloadReport, readCachedReport, saveCachedReport } from "./loader.js?v=3";
 
 const status = document.querySelector("#status");
 let settings;
@@ -7,6 +7,8 @@ let activeVersion;
 let activeHash;
 let checking = false;
 let failures = 0;
+let pointerReader;
+let recoveryRequested = false;
 
 function message(title, detail) {
   status.classList.toggle("loaded", Boolean(active));
@@ -25,23 +27,6 @@ function progress(received, total) {
   bar.hidden = false;
   if (total) { bar.max = total; bar.value = received; }
   else bar.removeAttribute("value");
-}
-
-export function validPointer(value) {
-  return value?.schemaVersion === 1 && /^https:\/\/[a-z0-9-]+\.(?:lhr\.life|localhost\.run)$/.test(value.url)
-    && /^[a-f0-9]{64}$/.test(value.version) && /^[a-f0-9]{64}$/.test(value.standaloneSha256)
-    && /^[a-f0-9]{64}$/.test(value.snapshotSha256)
-    && Number.isFinite(Date.parse(value.updatedAt));
-}
-
-async function readPointer() {
-  const url = new URL(settings.pointerUrl);
-  url.searchParams.set("t", Date.now());
-  const response = await fetch(url, { cache: "no-store", credentials: "omit", signal: AbortSignal.timeout(15000) });
-  if (!response.ok) throw new Error("Address unavailable");
-  const pointer = await response.json();
-  if (!validPointer(pointer)) throw new Error("Invalid report address");
-  return pointer;
 }
 
 async function showReport(html, pointer) {
@@ -93,7 +78,9 @@ async function refresh() {
   checking = true;
   try {
     settings ??= await (await fetch("./config.json", { cache: "no-store", credentials: "omit" })).json();
-    const pointer = await readPointer();
+    pointerReader ??= createPointerReader(settings.pointerUrl);
+    const pointer = await pointerReader.read({ recover: recoveryRequested });
+    recoveryRequested = false;
     if (Date.now() - Date.parse(pointer.updatedAt) > 180000) {
       message("Компьютер владельца недоступен", active ? "Показана последняя загруженная версия. Обновление возобновится автоматически." : "Отчёт откроется автоматически, когда компьютер будет в сети.");
       return;
@@ -116,6 +103,7 @@ async function refresh() {
     failures = 0;
     status.hidden = true;
   } catch (error) {
+    recoveryRequested = true;
     console.warn("Transport report load failed:", error.message);
     failures++;
     if (failures >= 2 || !active) message("Соединение с компьютером…", active
