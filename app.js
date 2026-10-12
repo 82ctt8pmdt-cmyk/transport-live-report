@@ -51,6 +51,7 @@ async function showReport(html, pointer) {
     frame.onload = null;
     const doc = frame.contentDocument;
     doc.open();
+    frame.contentWindow.history.replaceState(null, "", frameUrl.href);
     doc.write(html);
     doc.close();
     const deadline = Date.now() + 30000;
