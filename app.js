@@ -1,4 +1,4 @@
-import { createPointerReader, downloadReport, readCachedReport, saveCachedReport } from "./loader.js?v=3";
+import { createPointerReader, readStaticManifest, downloadReport, readCachedReport, saveCachedReport } from "./loader.js?v=4";
 
 const status = document.querySelector("#status");
 let settings;
@@ -77,11 +77,15 @@ async function refresh() {
   if (checking || document.hidden) return;
   checking = true;
   try {
-    settings ??= await (await fetch("./config.json", { cache: "no-store", credentials: "omit" })).json();
-    pointerReader ??= createPointerReader(settings.pointerUrl);
-    const pointer = await pointerReader.read({ recover: recoveryRequested });
+    settings ??= await (await fetch("./config.json", { cache: "no-store", credentials: "omit", signal: AbortSignal.timeout(15000) })).json();
+    let pointer;
+    if (settings.mode === "static") pointer = await readStaticManifest(new URL(settings.manifestPath, location.href));
+    else {
+      pointerReader ??= createPointerReader(settings.pointerUrl);
+      pointer = await pointerReader.read({ recover: recoveryRequested });
+    }
     recoveryRequested = false;
-    if (Date.now() - Date.parse(pointer.updatedAt) > 180000) {
+    if (settings.mode !== "static" && Date.now() - Date.parse(pointer.updatedAt) > 180000) {
       message("Компьютер владельца недоступен", active ? "Показана последняя загруженная версия. Обновление возобновится автоматически." : "Отчёт откроется автоматически, когда компьютер будет в сети.");
       return;
     }
@@ -96,7 +100,7 @@ async function refresh() {
         if (!bytes) bytes = await downloadReport(pointer, { onProgress: progress });
         message("Открываем отчёт…", "Данные проверены.");
         await showReport(new TextDecoder().decode(bytes), pointer);
-        document.documentElement.dataset.reportLoadSource = fromCache ? "browser-cache" : "mac";
+        document.documentElement.dataset.reportLoadSource = fromCache ? "browser-cache" : settings.mode === "static" ? "github-pages" : "mac";
         if (!fromCache) void saveCachedReport(pointer, bytes);
       }
     }
@@ -106,9 +110,10 @@ async function refresh() {
     recoveryRequested = true;
     console.warn("Transport report load failed:", error.message);
     failures++;
-    if (failures >= 2 || !active) message("Соединение с компьютером…", active
+    if (failures >= 2 || !active) message(settings?.mode === "static" ? "Повторяем загрузку отчёта…" : "Соединение с компьютером…", active
       ? "Показана последняя загруженная версия. Повторяем подключение автоматически."
-      : "Повторяем подключение автоматически. Компьютер владельца должен быть включён и подключён к интернету.");
+      : settings?.mode === "static" ? "Проверьте подключение к интернету. Повторная попытка выполняется автоматически."
+        : "Повторяем подключение автоматически. Компьютер владельца должен быть включён и подключён к интернету.");
   } finally {
     checking = false;
     if (failures && !active) setTimeout(refresh, 5000);

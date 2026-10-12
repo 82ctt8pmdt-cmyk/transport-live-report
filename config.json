@@ -1,3 +1,4 @@
 {
-  "pointerUrl": "https://gist.githubusercontent.com/82ctt8pmdt-cmyk/ff1f46a7fe75e4b92297ebb31cbc4ebf/raw/report.json"
+  "mode": "static",
+  "manifestPath": "./report-version.json"
 }

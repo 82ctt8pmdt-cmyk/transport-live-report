@@ -1,6 +1,21 @@
 const cacheName = "transport-report-2026-09";
 const maxReportBytes = 40 * 1024 * 1024;
 
+export async function readStaticManifest(manifestUrl, { fetcher = fetch } = {}) {
+  const address = new URL(manifestUrl);
+  if (!["http:", "https:"].includes(address.protocol)) throw new Error("Invalid report registry");
+  address.searchParams.set("t", Date.now());
+  const response = await fetcher(address.href, { cache: "no-store", credentials: "omit", signal: AbortSignal.timeout(15000) });
+  if (!response.ok) throw new Error("Report registry unavailable");
+  const value = await response.json();
+  if (value?.schemaVersion !== 1 || value.mode !== "static"
+    || !/^[a-f0-9]{64}$/.test(value.version) || !/^[a-f0-9]{64}$/.test(value.standaloneSha256)
+    || !/^[a-f0-9]{64}$/.test(value.snapshotSha256)
+    || !Number.isSafeInteger(value.standaloneBytes) || value.standaloneBytes < 1 || value.standaloneBytes > maxReportBytes
+    || value.reportPath !== `reports/${value.standaloneSha256}.html`) throw new Error("Invalid report registry");
+  return { ...value, reportUrl: new URL(value.reportPath, address).href };
+}
+
 export function validPointer(value) {
   return value?.schemaVersion === 1 && /^https:\/\/[a-z0-9-]+\.(?:lhr\.life|localhost\.run)$/.test(value.url)
     && /^[a-f0-9]{64}$/.test(value.version) && /^[a-f0-9]{64}$/.test(value.standaloneSha256)
@@ -56,7 +71,7 @@ export async function downloadReport(pointer, { onProgress = () => {}, fetcher =
   let reader;
   let complete = false;
   try {
-    const response = await fetcher(`${pointer.url}/__report/standalone?version=${pointer.version}`, {
+    const response = await fetcher(pointer.reportUrl || `${pointer.url}/__report/standalone?version=${pointer.version}`, {
       cache: "no-store", credentials: "omit", signal: controller.signal
     });
     if (!response.ok) throw new Error(`Report connection returned ${response.status}`);
