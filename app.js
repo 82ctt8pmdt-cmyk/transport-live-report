@@ -1,7 +1,10 @@
+import { downloadReport, readCachedReport, saveCachedReport } from "./loader.js?v=2";
+
 const status = document.querySelector("#status");
 let settings;
 let active;
 let activeVersion;
+let activeHash;
 let checking = false;
 let failures = 0;
 
@@ -10,6 +13,18 @@ function message(title, detail) {
   status.querySelector("strong").textContent = title;
   status.querySelector("p").textContent = detail;
   status.hidden = false;
+  status.querySelector("progress").hidden = true;
+}
+
+function progress(received, total) {
+  const percent = total ? Math.min(100, Math.floor(received / total * 100)) : null;
+  message(active ? "Обновление отчёта…" : "Загрузка отчёта…",
+    total ? `${percent}% · ${(received / 1e6).toFixed(1)} из ${(total / 1e6).toFixed(1)} МБ`
+      : `${(received / 1e6).toFixed(1)} МБ получено`);
+  const bar = status.querySelector("progress");
+  bar.hidden = false;
+  if (total) { bar.max = total; bar.value = received; }
+  else bar.removeAttribute("value");
 }
 
 export function validPointer(value) {
@@ -63,6 +78,7 @@ async function showReport(html, pointer) {
     active?.remove();
     active = frame;
     activeVersion = pointer.version;
+    activeHash = pointer.standaloneSha256;
     document.documentElement.dataset.reportVersion = pointer.version;
     document.documentElement.dataset.snapshotSha256 = pointer.snapshotSha256;
     status.hidden = true;
@@ -83,24 +99,32 @@ async function refresh() {
       return;
     }
     if (pointer.version !== activeVersion) {
-      if (active) message("Обновление отчёта…", "Текущая версия остаётся доступной.");
-      const response = await fetch(`${pointer.url}/__report/standalone?version=${pointer.version}`, {
-        cache: "no-store", credentials: "omit", signal: AbortSignal.timeout(180000)
-      });
-      if (!response.ok) throw new Error("Computer unavailable");
-      const bytes = await response.arrayBuffer();
-      const hash = Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", bytes)), byte => byte.toString(16).padStart(2, "0")).join("");
-      if (hash !== pointer.standaloneSha256) throw new Error("Report integrity mismatch");
-      await showReport(new TextDecoder().decode(bytes), pointer);
+      if (active && activeHash === pointer.standaloneSha256) {
+        activeVersion = pointer.version;
+        document.documentElement.dataset.reportVersion = pointer.version;
+      } else {
+        message("Проверка актуальной версии…", "");
+        let bytes = await readCachedReport(pointer);
+        const fromCache = Boolean(bytes);
+        if (!bytes) bytes = await downloadReport(pointer, { onProgress: progress });
+        message("Открываем отчёт…", "Данные проверены.");
+        await showReport(new TextDecoder().decode(bytes), pointer);
+        document.documentElement.dataset.reportLoadSource = fromCache ? "browser-cache" : "mac";
+        if (!fromCache) void saveCachedReport(pointer, bytes);
+      }
     }
     failures = 0;
     status.hidden = true;
-  } catch {
+  } catch (error) {
+    console.warn("Transport report load failed:", error.message);
     failures++;
     if (failures >= 2 || !active) message("Соединение с компьютером…", active
       ? "Показана последняя загруженная версия. Повторяем подключение автоматически."
       : "Повторяем подключение автоматически. Компьютер владельца должен быть включён и подключён к интернету.");
-  } finally { checking = false; }
+  } finally {
+    checking = false;
+    if (failures && !active) setTimeout(refresh, 5000);
+  }
 }
 
 setInterval(refresh, 15000);
