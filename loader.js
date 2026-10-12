@@ -1,6 +1,47 @@
 const cacheName = "transport-report-2026-09";
 const maxReportBytes = 40 * 1024 * 1024;
 
+export function validPointer(value) {
+  return value?.schemaVersion === 1 && /^https:\/\/[a-z0-9-]+\.(?:lhr\.life|localhost\.run)$/.test(value.url)
+    && /^[a-f0-9]{64}$/.test(value.version) && /^[a-f0-9]{64}$/.test(value.standaloneSha256)
+    && /^[a-f0-9]{64}$/.test(value.snapshotSha256) && Number.isFinite(Date.parse(value.updatedAt));
+}
+
+export function createPointerReader(pointerUrl, { fetcher = fetch, now = Date.now } = {}) {
+  const raw = new URL(pointerUrl);
+  const gistId = /^\/[^/]+\/([a-f0-9]{32})\/raw\/report.json$/.exec(raw.pathname)?.[1];
+  if (raw.hostname !== "gist.githubusercontent.com" || !gistId) throw new Error("Invalid address registry");
+  let newest;
+  let lastRecovery = -Infinity;
+  function adopt(value) {
+    if (!validPointer(value)) throw new Error("Invalid report address");
+    if (!newest || Date.parse(value.updatedAt) >= Date.parse(newest.updatedAt)) newest = value;
+  }
+  async function json(url) {
+    const response = await fetcher(url, { cache: "no-store", credentials: "omit", signal: AbortSignal.timeout(15000) });
+    if (!response.ok) throw new Error("Address unavailable");
+    return response.json();
+  }
+  return { async read({ recover = false } = {}) {
+    let failure;
+    raw.searchParams.set("t", now());
+    try { adopt(await json(raw.href)); }
+    catch (error) { failure = error; }
+    // Raw-file caches may lag after a reconnect. Use the public API only on
+    // failure/staleness, at most once per minute; never put a token in the page.
+    if ((recover || failure || !newest || now() - Date.parse(newest.updatedAt) > 180000)
+      && now() - lastRecovery >= 60000) {
+      lastRecovery = now();
+      try {
+        const gist = await json(`https://api.github.com/gists/${gistId}?t=${now()}`);
+        adopt(JSON.parse(gist.files["report.json"].content));
+      } catch (error) { failure = error; }
+    }
+    if (!newest) throw failure || new Error("Address unavailable");
+    return newest;
+  } };
+}
+
 export async function verifyBytes(bytes, expectedHash) {
   const hash = Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", bytes)),
     byte => byte.toString(16).padStart(2, "0")).join("");
