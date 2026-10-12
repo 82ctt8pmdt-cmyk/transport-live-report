@@ -1,4 +1,4 @@
-import { createPointerReader, readStaticManifest, downloadReport, readCachedReport, saveCachedReport } from "./loader.js?v=4";
+import { ReportError, createPointerReader, readJson, resolveDelivery, loadDelivery, saveCachedReport } from "./loader.js?v=5";
 
 const status = document.querySelector("#status");
 let settings;
@@ -8,7 +8,8 @@ let activeHash;
 let checking = false;
 let failures = 0;
 let pointerReader;
-let recoveryRequested = false;
+let activeResult;
+document.documentElement.dataset.loaderStarted = "true";
 
 function message(title, detail) {
   status.classList.toggle("loaded", Boolean(active));
@@ -16,6 +17,19 @@ function message(title, detail) {
   status.querySelector("p").textContent = detail;
   status.hidden = false;
   status.querySelector("progress").hidden = true;
+}
+
+function errorDetail(error) {
+  const stages = { config: "настройки", manifest: "версия публикации", "channel-registry": "адрес канала Mac",
+    download: "полный отчёт", integrity: "проверка хеша", render: "отображение данных" };
+  return `${stages[error.stage] || "загрузка"} · ${error.code || "UNKNOWN"}${error.status ? ` · HTTP ${error.status}` : ""}: ${error.message}`;
+}
+
+function showSource(result) {
+  if (result?.fallbackReason) {
+    message(result.publishedBehindMac ? "Резервная версия; обновление с Mac не получено" : "Отчёт открыт из резервной публикации",
+      `Версия ${activeVersion.slice(0, 12)}. ${errorDetail(result.fallbackReason)}. Проверка продолжится автоматически.`);
+  } else status.hidden = true;
 }
 
 function progress(received, total) {
@@ -40,9 +54,9 @@ async function showReport(html, pointer) {
   frameUrl.search = current.search;
   frameUrl.searchParams.set("view", "1");
   const opened = new Promise((resolve, reject) => {
-    const timeout = setTimeout(() => reject(new Error("Frame unavailable")), 30000);
+    const timeout = setTimeout(() => reject(new ReportError("FRAME_TIMEOUT", "render", "Не загрузилась оболочка отчёта")), 15000);
     frame.onload = () => { clearTimeout(timeout); resolve(); };
-    frame.onerror = () => { clearTimeout(timeout); reject(new Error("Frame unavailable")); };
+    frame.onerror = () => { clearTimeout(timeout); reject(new ReportError("FRAME_NETWORK", "render", "Ошибка загрузки оболочки отчёта")); };
   });
   frame.src = frameUrl.href;
   document.body.append(frame);
@@ -56,7 +70,7 @@ async function showReport(html, pointer) {
     doc.close();
     const deadline = Date.now() + 30000;
     while (!doc.querySelector("main article")) {
-      if (Date.now() > deadline) throw new Error("Report did not render");
+      if (Date.now() > deadline) throw new ReportError("RENDER_TIMEOUT", "render", "Данные получены, но отчёт не отобразился");
       await new Promise(resolve => setTimeout(resolve, 100));
     }
     frame.className = "";
@@ -77,46 +91,47 @@ async function refresh() {
   if (checking || document.hidden) return;
   checking = true;
   try {
-    settings ??= await (await fetch("./config.json", { cache: "no-store", credentials: "omit", signal: AbortSignal.timeout(15000) })).json();
-    let pointer;
-    if (settings.mode === "static") pointer = await readStaticManifest(new URL(settings.manifestPath, location.href));
-    else {
-      pointerReader ??= createPointerReader(settings.pointerUrl);
-      pointer = await pointerReader.read({ recover: recoveryRequested });
+    if (!settings) {
+      const configUrl = new URL("./config.json", location.href);
+      configUrl.searchParams.set("t", Date.now());
+      settings = await readJson(configUrl.href, { stage: "config" });
+      if (!["static", "mac-first"].includes(settings.mode) || settings.manifestPath !== "./report-version.json") {
+        settings = undefined;
+        throw new ReportError("CONFIG_INVALID", "config", "Неизвестная схема публикации");
+      }
     }
-    recoveryRequested = false;
-    if (settings.mode !== "static" && Date.now() - Date.parse(pointer.updatedAt) > 180000) {
-      message("Компьютер владельца недоступен", active ? "Показана последняя загруженная версия. Обновление возобновится автоматически." : "Отчёт откроется автоматически, когда компьютер будет в сети.");
-      return;
-    }
+    message("Проверка опубликованной версии…", "");
+    if (settings.mode === "mac-first") pointerReader ??= createPointerReader(settings.pointerUrl);
+    const delivery = await resolveDelivery(settings, { pointerReader });
+    const pointer = delivery.primary;
     if (pointer.version !== activeVersion) {
       if (active && activeHash === pointer.standaloneSha256) {
         activeVersion = pointer.version;
         document.documentElement.dataset.reportVersion = pointer.version;
+        activeResult = { ...activeResult, fallbackReason: delivery.fallbackReason };
       } else {
-        message("Проверка актуальной версии…", "");
-        let bytes = await readCachedReport(pointer);
-        const fromCache = Boolean(bytes);
-        if (!bytes) bytes = await downloadReport(pointer, { onProgress: progress });
+        message(delivery.source === "mac" ? "Загрузка с Mac…" : "Загрузка опубликованного отчёта…", "");
+        const result = await loadDelivery(delivery, { onProgress: progress });
         message("Открываем отчёт…", "Данные проверены.");
-        await showReport(new TextDecoder().decode(bytes), pointer);
-        document.documentElement.dataset.reportLoadSource = fromCache ? "browser-cache" : settings.mode === "static" ? "github-pages" : "mac";
-        if (!fromCache) void saveCachedReport(pointer, bytes);
+        await showReport(new TextDecoder().decode(result.bytes), result.pointer);
+        activeResult = result;
+        document.documentElement.dataset.reportLoadSource = result.fromCache ? "browser-cache" : result.source;
+        if (!result.fromCache) void saveCachedReport(result.pointer, result.bytes);
       }
     }
+    if (delivery.fallbackReason && activeResult) activeResult.fallbackReason = delivery.fallbackReason;
     failures = 0;
-    status.hidden = true;
+    delete document.documentElement.dataset.reportError;
+    showSource(activeResult);
   } catch (error) {
-    recoveryRequested = true;
-    console.warn("Transport report load failed:", error.message);
+    console.warn("Transport report load failed:", error.code, error.stage, error.status);
+    document.documentElement.dataset.reportError = JSON.stringify({ code: error.code || "UNKNOWN", stage: error.stage, status: error.status });
     failures++;
-    if (failures >= 2 || !active) message(settings?.mode === "static" ? "Повторяем загрузку отчёта…" : "Соединение с компьютером…", active
-      ? "Показана последняя загруженная версия. Повторяем подключение автоматически."
-      : settings?.mode === "static" ? "Проверьте подключение к интернету. Повторная попытка выполняется автоматически."
-        : "Повторяем подключение автоматически. Компьютер владельца должен быть включён и подключён к интернету.");
+    message(active ? "Актуальность отчёта не подтверждена" : "Отчёт пока не загрузился",
+      `${active ? `Показана ранее загруженная версия ${activeVersion.slice(0, 12)}. ` : ""}${errorDetail(error)}. Повторим автоматически.`);
   } finally {
     checking = false;
-    if (failures && !active) setTimeout(refresh, 5000);
+    if (failures && !active) setTimeout(refresh, 15000);
   }
 }
 

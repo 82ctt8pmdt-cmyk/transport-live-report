@@ -1,25 +1,51 @@
 const cacheName = "transport-report-2026-09";
 const maxReportBytes = 40 * 1024 * 1024;
 
+export class ReportError extends Error {
+  constructor(code, stage, message, status) {
+    super(message);
+    this.name = "ReportError";
+    Object.assign(this, { code, stage, status });
+  }
+}
+
+export async function readJson(url, { fetcher = fetch, timeoutMs = 10000, stage = "registry" } = {}) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetcher(url, { cache: "no-store", credentials: "omit", signal: controller.signal });
+    if (!response.ok) throw new ReportError("HTTP", stage, `HTTP ${response.status}`, response.status);
+    const text = await response.text();
+    if (text.length > 1000000 || /^\s*</.test(text)) {
+      throw new ReportError("METADATA_CONTENT", stage, "Вместо метаданных получена другая страница");
+    }
+    try { return JSON.parse(text); }
+    catch { throw new ReportError("METADATA_JSON", stage, "Некорректный JSON"); }
+  } catch (error) {
+    if (error instanceof ReportError) throw error;
+    if (controller.signal.aborted) throw new ReportError("TIMEOUT", stage, "Истекло время ожидания");
+    throw new ReportError("NETWORK", stage, "Сетевая ошибка; DNS, TLS и CORS требуют проверки в браузере");
+  } finally { clearTimeout(timer); }
+}
+
 export async function readStaticManifest(manifestUrl, { fetcher = fetch } = {}) {
   const address = new URL(manifestUrl);
   if (!["http:", "https:"].includes(address.protocol)) throw new Error("Invalid report registry");
   address.searchParams.set("t", Date.now());
-  const response = await fetcher(address.href, { cache: "no-store", credentials: "omit", signal: AbortSignal.timeout(15000) });
-  if (!response.ok) throw new Error("Report registry unavailable");
-  const value = await response.json();
+  const value = await readJson(address.href, { fetcher, stage: "manifest" });
   if (value?.schemaVersion !== 1 || value.mode !== "static"
     || !/^[a-f0-9]{64}$/.test(value.version) || !/^[a-f0-9]{64}$/.test(value.standaloneSha256)
     || !/^[a-f0-9]{64}$/.test(value.snapshotSha256)
     || !Number.isSafeInteger(value.standaloneBytes) || value.standaloneBytes < 1 || value.standaloneBytes > maxReportBytes
-    || value.reportPath !== `reports/${value.standaloneSha256}.html`) throw new Error("Invalid report registry");
+    || value.reportPath !== `reports/${value.standaloneSha256}.html`) throw new ReportError("MANIFEST_INVALID", "manifest", "Invalid report registry");
   return { ...value, reportUrl: new URL(value.reportPath, address).href };
 }
 
 export function validPointer(value) {
   return value?.schemaVersion === 1 && /^https:\/\/[a-z0-9-]+\.(?:lhr\.life|localhost\.run)$/.test(value.url)
     && /^[a-f0-9]{64}$/.test(value.version) && /^[a-f0-9]{64}$/.test(value.standaloneSha256)
-    && /^[a-f0-9]{64}$/.test(value.snapshotSha256) && Number.isFinite(Date.parse(value.updatedAt));
+    && /^[a-f0-9]{64}$/.test(value.snapshotSha256) && Number.isFinite(Date.parse(value.updatedAt))
+    && Number.isSafeInteger(value.standaloneBytes) && value.standaloneBytes > 0 && value.standaloneBytes <= maxReportBytes;
 }
 
 export function createPointerReader(pointerUrl, { fetcher = fetch, now = Date.now } = {}) {
@@ -27,40 +53,56 @@ export function createPointerReader(pointerUrl, { fetcher = fetch, now = Date.no
   const gistId = /^\/[^/]+\/([a-f0-9]{32})\/raw\/report.json$/.exec(raw.pathname)?.[1];
   if (raw.hostname !== "gist.githubusercontent.com" || !gistId) throw new Error("Invalid address registry");
   let newest;
-  let lastRecovery = -Infinity;
   function adopt(value) {
     if (!validPointer(value)) throw new Error("Invalid report address");
     if (!newest || Date.parse(value.updatedAt) >= Date.parse(newest.updatedAt)) newest = value;
   }
-  async function json(url) {
-    const response = await fetcher(url, { cache: "no-store", credentials: "omit", signal: AbortSignal.timeout(15000) });
-    if (!response.ok) throw new Error("Address unavailable");
-    return response.json();
-  }
-  return { async read({ recover = false } = {}) {
-    let failure;
+  return { async read() {
     raw.searchParams.set("t", now());
-    try { adopt(await json(raw.href)); }
-    catch (error) { failure = error; }
-    // Raw-file caches may lag after a reconnect. Use the public API only on
-    // failure/staleness, at most once per minute; never put a token in the page.
-    if ((recover || failure || !newest || now() - Date.parse(newest.updatedAt) > 180000)
-      && now() - lastRecovery >= 60000) {
-      lastRecovery = now();
-      try {
-        const gist = await json(`https://api.github.com/gists/${gistId}?t=${now()}`);
-        adopt(JSON.parse(gist.files["report.json"].content));
-      } catch (error) { failure = error; }
-    }
-    if (!newest) throw failure || new Error("Address unavailable");
+    adopt(await readJson(raw.href, { fetcher, timeoutMs: 4000, stage: "channel-registry" }));
     return newest;
   } };
+}
+
+export async function resolveDelivery(settings, { baseUrl = location.href, fetcher = fetch, pointerReader, now = Date.now } = {}) {
+  let fallback;
+  let manifestError;
+  try { fallback = await readStaticManifest(new URL(settings.manifestPath, baseUrl), { fetcher }); }
+  catch (error) { manifestError = error; }
+  if (settings.mode === "mac-first") {
+    try {
+      const primary = await pointerReader.read();
+      const age = now() - Date.parse(primary.updatedAt);
+      if (age > 180000 || age < -60000) throw new ReportError("CHANNEL_STALE", "channel-registry", "Адрес канала не подтверждён свежей записью");
+      return { primary, fallback, source: "mac", registryError: manifestError };
+    } catch (error) {
+      if (!fallback) throw error;
+      return { primary: fallback, source: "github-pages", fallbackReason: error };
+    }
+  }
+  if (!fallback) throw manifestError;
+  return { primary: fallback, source: "github-pages" };
+}
+
+export async function loadDelivery(delivery, { load = downloadReport, readCache = readCachedReport, onProgress = () => {} } = {}) {
+  async function obtain(pointer, source) {
+    const cached = await readCache(pointer);
+    const bytes = cached || await load(pointer, { onProgress, timeoutMs: source === "mac" ? 12000 : 60000,
+      stallMs: source === "mac" ? 6000 : 15000 });
+    return { bytes, pointer, source, fromCache: Boolean(cached) };
+  }
+  try { return { ...await obtain(delivery.primary, delivery.source), fallbackReason: delivery.fallbackReason }; }
+  catch (error) {
+    if (!delivery.fallback || delivery.source !== "mac") throw error;
+    return { ...await obtain(delivery.fallback, "github-pages"), fallbackReason: error,
+      publishedBehindMac: delivery.fallback.standaloneSha256 !== delivery.primary.standaloneSha256 };
+  }
 }
 
 export async function verifyBytes(bytes, expectedHash) {
   const hash = Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", bytes)),
     byte => byte.toString(16).padStart(2, "0")).join("");
-  if (hash !== expectedHash) throw new Error("Report integrity mismatch");
+  if (hash !== expectedHash) throw new ReportError("HASH_MISMATCH", "integrity", "Report integrity mismatch");
   return bytes;
 }
 
@@ -74,7 +116,7 @@ export async function downloadReport(pointer, { onProgress = () => {}, fetcher =
     const response = await fetcher(pointer.reportUrl || `${pointer.url}/__report/standalone?version=${pointer.version}`, {
       cache: "no-store", credentials: "omit", signal: controller.signal
     });
-    if (!response.ok) throw new Error(`Report connection returned ${response.status}`);
+    if (!response.ok) throw new ReportError("HTTP", "download", `Report connection returned ${response.status}`, response.status);
     const total = Number.isSafeInteger(pointer.standaloneBytes) ? pointer.standaloneBytes : null;
     if (total && (total < 1 || total > maxReportBytes)) throw new Error("Unexpected report size");
     onProgress(0, total);
@@ -84,7 +126,7 @@ export async function downloadReport(pointer, { onProgress = () => {}, fetcher =
     while (true) {
       let stalled;
       const next = await Promise.race([reader.read(), new Promise((_, reject) => {
-        stalled = setTimeout(() => { controller.abort(); reject(new Error("Report download stalled")); }, stallMs);
+        stalled = setTimeout(() => { controller.abort(); reject(new ReportError("STALL", "download", "Report download stalled")); }, stallMs);
       })]).finally(() => clearTimeout(stalled));
       if (next.done) break;
       size += next.value.byteLength;
@@ -92,13 +134,18 @@ export async function downloadReport(pointer, { onProgress = () => {}, fetcher =
       chunks.push(next.value);
       onProgress(size, total);
     }
-    if (total && size !== total) throw new Error("Incomplete report download");
+    if (total && size !== total) throw new ReportError("INCOMPLETE", "download", "Incomplete report download");
     const bytes = new Uint8Array(size);
     let offset = 0;
     for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength; }
     await verifyBytes(bytes.buffer, pointer.standaloneSha256);
     complete = true;
     return bytes.buffer;
+  } catch (error) {
+    if (error instanceof ReportError) throw error;
+    if (controller.signal.aborted) throw new ReportError("TIMEOUT", "download", "Истекло время загрузки отчёта");
+    if (error instanceof TypeError) throw new ReportError("NETWORK", "download", "Сетевая ошибка; DNS, TLS и CORS требуют проверки в браузере");
+    throw error;
   } finally {
     clearTimeout(timeout);
     if (!complete) { controller.abort(); await reader?.cancel().catch(() => {}); }
