@@ -76,7 +76,10 @@ export async function resolveDelivery(settings, { baseUrl = location.href, fetch
       if (age > 180000 || age < -60000) throw new ReportError("CHANNEL_STALE", "channel-registry", "Адрес канала не подтверждён свежей записью");
       return { primary, fallback, source: "mac", registryError: manifestError };
     } catch (error) {
-      if (!fallback) throw error;
+      if (!fallback) {
+        throw new ReportError("REGISTRIES_UNAVAILABLE", "manifest",
+          `Публикация: ${manifestError?.code || "UNKNOWN"}${manifestError?.status ? ` HTTP ${manifestError.status}` : ""}; канал Mac: ${error.code || "UNKNOWN"}`);
+      }
       return { primary: fallback, source: "github-pages", fallbackReason: error };
     }
   }
@@ -100,6 +103,7 @@ export async function loadDelivery(delivery, { load = downloadReport, readCache 
 }
 
 export async function verifyBytes(bytes, expectedHash) {
+  if (!crypto?.subtle) throw new ReportError("BROWSER_UNSUPPORTED", "integrity", "Недоступна безопасная проверка SHA-256 в браузере");
   const hash = Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", bytes)),
     byte => byte.toString(16).padStart(2, "0")).join("");
   if (hash !== expectedHash) throw new ReportError("HASH_MISMATCH", "integrity", "Report integrity mismatch");
@@ -120,6 +124,7 @@ export async function downloadReport(pointer, { onProgress = () => {}, fetcher =
     const total = Number.isSafeInteger(pointer.standaloneBytes) ? pointer.standaloneBytes : null;
     if (total && (total < 1 || total > maxReportBytes)) throw new Error("Unexpected report size");
     onProgress(0, total);
+    if (!response.body?.getReader) throw new ReportError("BROWSER_UNSUPPORTED", "download", "Браузер не поддерживает потоковую загрузку отчёта");
     reader = response.body.getReader();
     const chunks = [];
     let size = 0;
