@@ -20,7 +20,22 @@
   </style>
 </head>
 <body>
-  <section id="status" role="status" aria-live="polite"><strong>Транспорт · сентябрь 2026</strong><p>Проверка актуальной версии…</p><progress aria-label="Загрузка отчёта" hidden></progress></section>
-  <script type="module" src="./app.js?v=3"></script>
+  <section id="status" role="status" aria-live="polite"><strong>Транспорт · сентябрь 2026</strong><p>Проверка актуальной версии…</p><progress aria-label="Загрузка отчёта" hidden></progress><a id="public-report" href="https://82ctt8pmdt-cmyk.github.io/transport-live-report/" hidden>Открыть отчёт</a></section>
+  <script id="start-report">
+    if (location.protocol === "file:") {
+      const link = document.getElementById("public-report");
+      link.hidden = false;
+      document.querySelector("#status p").textContent = "Открываем публичный отчёт…";
+      const address = new URL(link.href);
+      address.search = location.search;
+      address.hash = location.hash;
+      location.replace(address.href);
+    } else {
+      const script = document.createElement("script");
+      script.type = "module";
+      script.src = "./app.js?v=3";
+      document.body.append(script);
+    }
+  </script>
 </body>
 </html>
