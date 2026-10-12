@@ -9,6 +9,7 @@ let checking = false;
 let failures = 0;
 let pointerReader;
 let activeResult;
+let lastMacPointer;
 document.documentElement.dataset.loaderStarted = "true";
 
 function message(title, detail) {
@@ -104,11 +105,17 @@ async function refresh() {
     if (settings.mode === "mac-first") pointerReader ??= createPointerReader(settings.pointerUrl);
     const delivery = await resolveDelivery(settings, { pointerReader });
     const pointer = delivery.primary;
+    if (delivery.source === "mac") lastMacPointer = pointer;
+    if (active && delivery.fallbackReason && lastMacPointer?.standaloneSha256 === activeHash
+      && pointer.standaloneSha256 !== activeHash) {
+      throw new ReportError("CURRENT_SOURCE_UNVERIFIED", "channel-registry",
+        "Канал Mac не подтверждён. Ранее загруженная версия сохранена; резерв имеет другой хеш");
+    }
     if (pointer.version !== activeVersion) {
       if (active && activeHash === pointer.standaloneSha256) {
         activeVersion = pointer.version;
         document.documentElement.dataset.reportVersion = pointer.version;
-        activeResult = { ...activeResult, fallbackReason: delivery.fallbackReason };
+        activeResult = { ...activeResult, pointer, publishedBehindMac: false, fallbackReason: delivery.fallbackReason };
       } else {
         message(delivery.source === "mac" ? "Загрузка с Mac…" : "Загрузка опубликованного отчёта…", "");
         const result = await loadDelivery(delivery, { onProgress: progress });
