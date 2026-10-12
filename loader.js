@@ -78,7 +78,7 @@ export async function resolveDelivery(settings, { baseUrl = location.href, fetch
     } catch (error) {
       if (!fallback) {
         throw new ReportError("REGISTRIES_UNAVAILABLE", "manifest",
-          `Публикация: ${manifestError?.code || "UNKNOWN"}${manifestError?.status ? ` HTTP ${manifestError.status}` : ""}; канал Mac: ${error.code || "UNKNOWN"}`);
+          `Публикация: ${manifestError?.status ? `HTTP ${manifestError.status}` : manifestError?.code || "UNKNOWN"}; канал Mac: ${error.code || "UNKNOWN"}`);
       }
       return { primary: fallback, source: "github-pages", fallbackReason: error };
     }

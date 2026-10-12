@@ -33,7 +33,7 @@
     } else {
       const script = document.createElement("script");
       script.type = "module";
-      script.src = "./app.js?v=6";
+      script.src = "./app.js?v=7";
       const fail = function () {
         document.querySelector("#status p").textContent = "Не загрузился код просмотра отчёта. Повторим подключение автоматически.";
         setTimeout(function () { if (!document.documentElement.dataset.loaderStarted) location.reload(); }, 30000);
