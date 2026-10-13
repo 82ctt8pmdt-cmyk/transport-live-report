@@ -1,9 +1,9 @@
 {
   "schemaVersion": 1,
   "mode": "static",
-  "version": "231d6e03dbc3c34293427f67cb4cc4afa10eb4960d29f57093c309727a179ffc",
-  "standaloneSha256": "1005019ac2538eacf61e2b28e75e1c507a2e0322a3ef47336d60d1adebcc24e1",
-  "snapshotSha256": "6e479fc7f36aa269a44a2a2b497ca695d78c42d132f2597621cd5698f192e198",
-  "standaloneBytes": 28483206,
-  "reportPath": "reports/1005019ac2538eacf61e2b28e75e1c507a2e0322a3ef47336d60d1adebcc24e1.html"
+  "version": "0c04ef1a64fe4980f2c4f6be6f90f8576e760b5e98b5ada9e31fbe8098ffa999",
+  "standaloneSha256": "cfedc0c5620cfeda7b16e6ed07bf4b8cc96bcbf1a37d8731f2dbdd3f3bf8ced7",
+  "snapshotSha256": "e01b2f0e9d16783705c7bf1fe2ecb7ad7cd085cba19c745c7421462bfdd43c9c",
+  "standaloneBytes": 28483373,
+  "reportPath": "reports/cfedc0c5620cfeda7b16e6ed07bf4b8cc96bcbf1a37d8731f2dbdd3f3bf8ced7.html"
 }
